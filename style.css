@@ -1,11 +1,7 @@
+html,
 body {
   margin: 0;
-  overflow: hidden;
-  background: #1a1a2e;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  height: 100vh;
+  padding: 0;
 }
 
 canvas {

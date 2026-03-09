@@ -1,588 +1,531 @@
 /*
-  GBDA 302 - Side Quest Week 6
-  "Border Check" — Inspired by Papers, Please
-
-  A document-checking game where travellers present papers at your desk.
-  You must APPROVE or DENY each traveller based on simple rules.
+  Week 6 — Side Quest 6: Adding Sound Effects to the Fox Platformer
+  Inspired by: Papers, Please / One Night Ultimate Werewolf
   
-  PHYSICS: Stamp sprites drop with gravity and bounce on the desk when
-           you make a decision. Documents slide in with physics-based motion.
-  SOUND:   Synthesized sound effects play on approve, deny, stamp hit,
-           and document arrival — combining physics + sound for a 
-           reactive, multi-sensory experience (BONUS).
+  Sound is used to reinforce player actions and game events —
+  every action has a consequence you can hear (Papers, Please tension).
 
   Controls:
-    A key — APPROVE the current traveller
-    D key — DENY the current traveller
+    A / D (or Left / Right Arrow)   Horizontal movement
+    W (or Up Arrow)                 Jump
+    Space Bar                       Attack
+    R                               Restart (only when dead or won)
+    M                               Mute / unmute music
 
-  Rule: Only travellers from "Arstotzka" are allowed in.
-        Deny everyone else.
-
-  References:
-    - p5.js (https://p5js.org/) [1]
-    - p5play v3 (https://p5play.org/) [2]
-    - p5.sound (https://p5js.org/reference/p5.sound/) [3]
-    - Planck.js physics (https://github.com/shakiba/planck.js) [4]
-    - Papers, Please by Lucas Pope (https://papersplea.se/) — game inspiration [5]
+  SOUND additions (SQ6 — Bonus: both sound + visual feedback):
+    jump.wav          — plays when player jumps
+    leafCollect.wav   — plays when a leaf is collected
+    hitEnemy.wav      — plays when fox attacks a boar
+    receiveDamage.wav — plays when fox takes damage
+    music.wav         — looping background music (M to mute)
+    Visual flash      — white screen flash on damage (multi-sensory)
 */
 
-// ============================================================
-// GAME CONSTANTS
-// ============================================================
-const VIEWW = 500;
-const VIEWH = 400;
-const GRAVITY = 10;
+// ─── SOUND VARIABLES ────────────────────────────────────────────────────────
+let sfxJump, sfxLeaf, sfxHit, sfxDamage, sfxMusic;
+let musicMuted = false;
 
-// Countries for document generation
-// Reference: Inspired by the fictional nations in Papers, Please [5]
-const COUNTRIES = [
-  "Arstotzka",  // the only valid country
-  "Kolechia",
-  "Antegria",
-  "Republia",
-  "Obristan",
-  "Impor"
+// ── SQ6 BONUS: damage flash ──────────────────────────────────────────────────
+let damageFlashTimer = 0;
+const DAMAGE_FLASH_FRAMES = 6;
+
+// ─── PLAYER / SENSOR ────────────────────────────────────────────────────────
+let player, sensor;
+let playerImg;
+
+let playerAnis = {
+  idle:     { row: 0, frames: 4, frameDelay: 10 },
+  run:      { row: 1, frames: 4, frameDelay: 3  },
+  jump:     { row: 2, frames: 3, frameDelay: Infinity, frame: 0 },
+  attack:   { row: 3, frames: 6, frameDelay: 2  },
+  hurtPose: { row: 5, frames: 4, frameDelay: Infinity },
+  death:    { row: 5, frames: 4, frameDelay: 16 },
+};
+
+let boar, boarImg, boarSpawns = [];
+
+let boarAnis = {
+  run:       { row: 1, frames: 4, frameDelay: 3 },
+  throwPose: { row: 4, frames: 1, frameDelay: Infinity, frame: 0 },
+  death:     { row: 5, frames: 4, frameDelay: 16 },
+};
+
+let attacking = false, attackFrameCounter = 0, attackHitThisSwing = false;
+let invulnTimer = 0;
+const INVULN_FRAMES = 45;
+let knockTimer = 0;
+const KNOCK_FRAMES = 30;
+let won = false;
+
+let ground, groundDeep, platformsL, platformsR, wallsL, wallsR;
+let groundTileImg, groundTileDeepImg, platformLCImg, platformRCImg, wallLImg, wallRImg;
+let bgLayers = [], bgForeImg, bgMidImg, bgFarImg;
+let leaf, leafImg, leafSpawns = [];
+let fire, fireImg;
+let fontImg, hudGfx;
+let lastScore = null, lastHealth = null, lastMaxHealth = null;
+let score = 0, maxHealth = 3, health = maxHealth;
+let dead = false, pendingDeath = false, deathStarted = false, deathFrameTimer = 0;
+
+let level = [
+  "                    g   g   b  x        ",
+  "                b x         LggR        ",
+  "      x   f     LggR                    ",
+  "     LR   LgR          LR               ",
+  "   fx  b        x   b                   ",
+  "   LgggR   x   LR   LgR x   b  xf       ",
+  "         LgR  b x       g   LggggR      ",
+  " fx           LgR                    fx ",
+  " LgR      b                         LggR",
+  "         LgR        f x    LR  LgR  [dd]",
+  "   x     [d]      x LggR   x    ff  [dd]",
+  "LgggRffLggggggRfffLgggg]fffgfLgggggggggg",
+  "dddddddddddddddddddddddddddddddddddddddd",
 ];
 
-// ============================================================
-// GAME STATE
-// ============================================================
-let gameState = "title"; // "title", "playing", "gameover"
-let score = 0;
-let lives = 3;
-let travellersProcessed = 0;
-let maxTravellers = 10;
+const TILE_W = 24, TILE_H = 24, FRAME_W = 32, FRAME_H = 32;
+const LEVELW = TILE_W * level[0].length, LEVELH = TILE_H * level.length;
+const VIEWTILE_W = 10, VIEWTILE_H = 8;
+const VIEWW = TILE_W * VIEWTILE_W, VIEWH = TILE_H * VIEWTILE_H;
+const WIN_SCORE = 15, PLAYER_START_Y = LEVELH - TILE_H * 4;
+const PLAYER_KNOCKBACK_X = 2.0, PLAYER_KNOCKBACK_Y = 3.2, PLAYER_JUMP = 4.5;
+const ATTACK_RANGE_X = 20, ATTACK_RANGE_Y = 16;
+const BOAR_W = 18, BOAR_H = 12, BOAR_SPEED = 0.6, BOAR_HP = 3;
+const BOAR_KNOCK_FRAMES = 7, BOAR_KNOCK_X = 1.2, BOAR_KNOCK_Y = 1.6, BOAR_FLASH_FRAMES = 5;
+const BOAR_TURN_COOLDOWN = 12;
+const PROBE_FORWARD = 10, PROBE_FRONT_Y = 10, PROBE_HEAD_Y = 0, PROBE_SIZE = 4;
+const FONT_COLS = 19, CELL = 30, FONT_SCALE = 1 / 3;
+const GLYPH_W = CELL * FONT_SCALE, GLYPH_H = CELL * FONT_SCALE;
+const FONT_CHARS = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
+const GRAVITY = 10;
 
-// current traveller
-let currentTraveller = null;
-let waitingForInput = false;
-
-// stamp physics sprites
-let stamps;
-let deskGroup;
-
-// feedback
-let feedbackText = "";
-let feedbackColor;
-let feedbackTimer = 0;
-
-// document slide-in animation
-let docX = -300;
-let docTargetX = 100;
-let docSliding = false;
-
-// sound synthesis objects
-let approveOsc, denyOsc, stampOsc, slideOsc;
-let approveEnv, denyEnv, stampEnv, slideEnv;
-
-// ============================================================
-// SOUND SETUP — synthesized using p5.sound Oscillators [3]
-// ============================================================
-function setupSounds() {
-  // APPROVE sound — pleasant rising tone
-  approveOsc = new p5.Oscillator("sine");
-  approveOsc.amp(0);
-  approveOsc.start();
-  approveEnv = new p5.Envelope();
-  approveEnv.setADSR(0.01, 0.1, 0.2, 0.3);
-  approveEnv.setRange(0.3, 0);
-
-  // DENY sound — harsh low buzz
-  denyOsc = new p5.Oscillator("square");
-  denyOsc.amp(0);
-  denyOsc.start();
-  denyEnv = new p5.Envelope();
-  denyEnv.setADSR(0.01, 0.05, 0.15, 0.2);
-  denyEnv.setRange(0.2, 0);
-
-  // STAMP sound — short percussive thud
-  stampOsc = new p5.Oscillator("triangle");
-  stampOsc.amp(0);
-  stampOsc.start();
-  stampEnv = new p5.Envelope();
-  stampEnv.setADSR(0.005, 0.05, 0.0, 0.1);
-  stampEnv.setRange(0.4, 0);
-
-  // SLIDE sound — paper sliding
-  slideOsc = new p5.Oscillator("sawtooth");
-  slideOsc.amp(0);
-  slideOsc.start();
-  slideEnv = new p5.Envelope();
-  slideEnv.setADSR(0.05, 0.2, 0.05, 0.1);
-  slideEnv.setRange(0.08, 0);
+// ─── SOUND HELPERS ───────────────────────────────────────────────────────────
+function playSfx(sfx) {
+  if (!sfx) return;
+  try { if (sfx.isPlaying()) sfx.stop(); sfx.play(); } catch(e) {}
 }
 
-function playApproveSound() {
-  approveOsc.freq(523); // C5
-  approveEnv.play(approveOsc);
-  // second tone after short delay for a "ding-ding" feel
-  setTimeout(() => {
-    approveOsc.freq(659); // E5
-    approveEnv.play(approveOsc);
-  }, 120);
+function startMusic() {
+  if (!sfxMusic || musicMuted) return;
+  if (!sfxMusic.isPlaying()) { sfxMusic.setVolume(0.25); sfxMusic.loop(); }
 }
 
-function playDenySound() {
-  denyOsc.freq(150);
-  denyEnv.play(denyOsc);
-  setTimeout(() => {
-    denyOsc.freq(120);
-    denyEnv.play(denyOsc);
-  }, 100);
+// ─── TILE HELPERS ────────────────────────────────────────────────────────────
+function tileAt(col, row) {
+  if (row < 0 || row >= level.length || col < 0 || col >= level[0].length) return " ";
+  return level[row][col];
 }
 
-function playStampSound() {
-  stampOsc.freq(80);
-  stampEnv.play(stampOsc);
+// ─── PRELOAD ─────────────────────────────────────────────────────────────────
+function preload() {
+  playerImg         = loadImage("assets/foxSpriteSheet.png");
+  boarImg           = loadImage("assets/boarSpriteSheet.png");
+  leafImg           = loadImage("assets/leafSpriteSheet.png");
+  fireImg           = loadImage("assets/fireSpriteSheet.png");
+  bgFarImg          = loadImage("assets/background_layer_1.png");
+  bgMidImg          = loadImage("assets/background_layer_2.png");
+  bgForeImg         = loadImage("assets/background_layer_3.png");
+  groundTileImg     = loadImage("assets/groundTile.png");
+  groundTileDeepImg = loadImage("assets/groundTileDeep.png");
+  platformLCImg     = loadImage("assets/platformLC.png");
+  platformRCImg     = loadImage("assets/platformRC.png");
+  wallLImg          = loadImage("assets/wallL.png");
+  wallRImg          = loadImage("assets/wallR.png");
+  fontImg           = loadImage("assets/bitmapFont.png");
+
+  // SQ6: load sounds
+  sfxJump   = loadSound("assets/sfx/jump.wav");
+  sfxLeaf   = loadSound("assets/sfx/leafCollect.wav");
+  sfxHit    = loadSound("assets/sfx/hitEnemy.wav");
+  sfxDamage = loadSound("assets/sfx/receiveDamage.wav");
+  sfxMusic  = loadSound("assets/sfx/music.wav");
 }
 
-function playSlideSound() {
-  slideOsc.freq(200);
-  slideEnv.play(slideOsc);
-}
-
-// ============================================================
-// TRAVELLER GENERATION
-// ============================================================
-function generateTraveller() {
-  let country = random(COUNTRIES);
-  // Make roughly 50% of travellers from Arstotzka so the game is fair
-  if (random() < 0.5) {
-    country = "Arstotzka";
-  }
-  
-  let names = [
-    "Jorji Costava", "Sergiu Volkov", "Elisa Katsarov",
-    "Dari Ludum", "Mikhail Saratov", "Anya Petrov",
-    "Calensk Fier", "Shae Piersovska", "Vince Lansen", "Nina Orlov"
-  ];
-
-  return {
-    name: random(names),
-    country: country,
-    isValid: country === "Arstotzka"
-  };
-}
-
-// ============================================================
-// SETUP — canvas, physics world, sound [1][2][3][4]
-// ============================================================
+// ─── SETUP ───────────────────────────────────────────────────────────────────
 function setup() {
-  new Canvas(VIEWW, VIEWH);
-  world.gravity.y = GRAVITY;
-
-  // desk surface for stamps to land on — static physics body [2][4]
-  deskGroup = new Group();
-  deskGroup.physics = "static";
-
-  let desk = new Sprite(VIEWW / 2, VIEWH - 30, VIEWW, 20);
-  desk.physics = "static";
-  desk.color = color(60, 40, 30);
-  desk.stroke = color(80, 60, 40);
-  deskGroup.add(desk);
-
-  // stamp group — these will be dynamic physics sprites [2][4]
-  stamps = new Group();
-
-  setupSounds();
+  new Canvas(VIEWW, VIEWH, "pixelated");
+  noSmooth();
+  applyIntegerScale();
+  window.addEventListener("resize", applyIntegerScale);
+  allSprites.pixelPerfect = true;
+  world.autoStep = false;
+  hudGfx = createGraphics(VIEWW, VIEWH);
+  hudGfx.noSmooth(); hudGfx.pixelDensity(1);
+  makeWorld();
+  for (const s of leaf) s.removeColliders();
+  leafSpawns = [];
+  for (const s of leaf) { s.active = true; leafSpawns.push({ s, x: s.x, y: s.y }); }
+  boarSpawns = [];
+  for (const e of boar) boarSpawns.push({ x: e.x, y: e.y, dir: e.dir });
+  if (sfxJump)   sfxJump.setVolume(0.6);
+  if (sfxLeaf)   sfxLeaf.setVolume(0.7);
+  if (sfxHit)    sfxHit.setVolume(0.7);
+  if (sfxDamage) sfxDamage.setVolume(0.8);
 }
 
-// ============================================================
-// DRAW LOOP
-// ============================================================
+// ─── DRAW ────────────────────────────────────────────────────────────────────
 function draw() {
-  background(30, 30, 50);
+  startMusic();
+  background(69, 61, 79);
+  updateBoars();
+  world.step();
 
-  if (gameState === "title") {
-    drawTitle();
-  } else if (gameState === "playing") {
-    drawGame();
-  } else if (gameState === "gameover") {
-    drawGameOver();
+  camera.width = VIEWW; camera.height = VIEWH;
+  let targetX = constrain(player.x, VIEWW / 2, LEVELW - VIEWW / 2 - TILE_W / 2);
+  let targetY = constrain(player.y, VIEWH / 2 - TILE_H * 2, LEVELH - VIEWH / 2 - TILE_H);
+  camera.x = Math.round(lerp(camera.x || targetX, targetX, 0.1));
+  camera.y = Math.round(lerp(camera.y || targetY, targetY, 0.1));
+
+  const grounded = isPlayerGrounded();
+
+  // ATTACK
+  if (!dead && !won && knockTimer === 0 && !pendingDeath && grounded && !attacking && kb.presses("space")) {
+    attacking = true; attackHitThisSwing = false; attackFrameCounter = 0;
+    player.vel.x = 0; player.ani.frame = 0; player.ani = "attack"; player.ani.play();
+  }
+
+  // JUMP — SQ6: play jump sound
+  if (!dead && !won && knockTimer === 0 && !pendingDeath && grounded && kb.presses("up")) {
+    player.vel.y = -1 * PLAYER_JUMP;
+    playSfx(sfxJump);
+  }
+
+  // MUTE TOGGLE — SQ6
+  if (kb.presses("m")) {
+    musicMuted = !musicMuted;
+    if (musicMuted) { sfxMusic && sfxMusic.stop(); }
+    else startMusic();
+  }
+
+  // PLAYER STATE
+  if (!dead && knockTimer > 0)          { player.ani = "hurtPose"; player.ani.frame = 1; }
+  else if (!dead && pendingDeath)       { player.ani = "hurtPose"; player.ani.frame = 1; }
+  else if (!dead && attacking) {
+    attackFrameCounter++;
+    if (!attackHitThisSwing && attackFrameCounter >= 4 && attackFrameCounter <= 8) tryHitBoar();
+    if (attackFrameCounter > 12) { attacking = false; attackFrameCounter = 0; attackHitThisSwing = false; }
+  } else if (!dead && !grounded) { player.ani = "jump"; player.ani.frame = player.vel.y < 0 ? 0 : 1; }
+  else if (!dead) { player.ani = kb.pressing("left") || kb.pressing("right") ? "run" : "idle"; }
+
+  // MOVEMENT
+  if (dead || won)          { player.vel.x = 0; }
+  else if (knockTimer > 0)  {}
+  else if (pendingDeath)    { player.vel.x = 0; }
+  else if (!attacking) {
+    player.vel.x = 0;
+    if (kb.pressing("left"))  { player.vel.x = -1.5; player.mirror.x = true; }
+    else if (kb.pressing("right")) { player.vel.x = 1.5; player.mirror.x = false; }
+  }
+  player.x = constrain(player.x, FRAME_W / 2, LEVELW - FRAME_W / 2);
+
+  // PARALLAX
+  camera.off();
+  imageMode(CORNER); drawingContext.imageSmoothingEnabled = false;
+  for (const layer of bgLayers) {
+    const img = layer.img, w = img.width;
+    let x = Math.round((-camera.x * layer.speed) % w);
+    if (x > 0) x -= w;
+    for (let tx = x; tx < VIEWW + w; tx += w) image(img, tx, 0);
+  }
+  camera.on();
+
+  // FALL RESET
+  if (!dead && player.y > LEVELH + TILE_H * 3) {
+    player.x = FRAME_W; player.y = PLAYER_START_Y; player.vel.x = 0; player.vel.y = 0;
+  }
+
+  if (invulnTimer > 0) invulnTimer--;
+  if (knockTimer  > 0) knockTimer--;
+  if (damageFlashTimer > 0) damageFlashTimer--; // SQ6 bonus
+
+  if (!dead && pendingDeath && knockTimer === 0 && grounded) { dead = true; pendingDeath = false; deathStarted = false; }
+
+  if (dead && !deathStarted) {
+    deathStarted = true; player.tint = "#ffffff";
+    player.vel.x = 0; player.vel.y = 0;
+    player.ani = "death"; player.ani.frame = 0; deathFrameTimer = 0;
+  }
+  if (dead) {
+    const msPerFrame = (playerAnis.death.frameDelay * 1000) / 60;
+    deathFrameTimer += deltaTime;
+    player.ani.frame = Math.min(playerAnis.death.frames - 1, Math.floor(deathFrameTimer / msPerFrame));
+  }
+
+  // PIXEL SNAP
+  const px = player.x, py = player.y, sx = sensor.x, sy = sensor.y;
+  player.x = Math.round(player.x); player.y = Math.round(player.y);
+  sensor.x = Math.round(sensor.x); sensor.y = Math.round(sensor.y);
+  player.tint = (!dead && invulnTimer > 0) ? (Math.floor(invulnTimer / 4) % 2 === 0 ? "#ff5050" : "#ffffff") : "#ffffff";
+  allSprites.draw();
+  player.x = px; player.y = py; sensor.x = sx; sensor.y = sy;
+
+  // HUD
+  if (score !== lastScore || health !== lastHealth || maxHealth !== lastMaxHealth) {
+    redrawHUD(); lastScore = score; lastHealth = health; lastMaxHealth = maxHealth;
+  }
+  camera.off(); imageMode(CORNER); drawingContext.imageSmoothingEnabled = false;
+  image(hudGfx, 0, 0);
+
+  // SQ6 BONUS: red screen flash on damage
+  if (damageFlashTimer > 0) {
+    const alpha = map(damageFlashTimer, 0, DAMAGE_FLASH_FRAMES, 0, 140);
+    noStroke(); fill(255, 0, 0, alpha);
+    rect(0, 0, VIEWW, VIEWH);
+  }
+
+  camera.on();
+
+  if (dead) drawDeathOverlay();
+  if (won)  drawWinOverlay();
+  if ((dead || won) && kb.presses("r")) restartGame();
+}
+
+function applyIntegerScale() {
+  const c = document.querySelector("canvas");
+  const scale = Math.max(1, Math.floor(Math.min(window.innerWidth / VIEWW, window.innerHeight / VIEWH)));
+  c.style.width = VIEWW * scale + "px"; c.style.height = VIEWH * scale + "px";
+}
+
+// ─── HUD ─────────────────────────────────────────────────────────────────────
+function drawBitmapTextToGfx(g, str, x, y, scale = FONT_SCALE) {
+  str = String(str);
+  const dw = CELL * scale, dh = CELL * scale;
+  for (let i = 0; i < str.length; i++) {
+    const idx = FONT_CHARS.indexOf(str[i]);
+    if (idx === -1) continue;
+    g.image(fontImg, Math.round(x + i * dw), Math.round(y), dw, dh, (idx % FONT_COLS) * CELL, Math.floor(idx / FONT_COLS) * CELL, CELL, CELL);
   }
 }
 
-// ============================================================
-// TITLE SCREEN
-// ============================================================
-function drawTitle() {
-  // dark office background
-  fill(40, 40, 60);
-  noStroke();
-  rect(0, 0, VIEWW, VIEWH);
+function drawOutlinedTextToGfx(g, str, x, y, fillHex) {
+  g.tint("#000000");
+  drawBitmapTextToGfx(g, str, x - 1, y); drawBitmapTextToGfx(g, str, x + 1, y);
+  drawBitmapTextToGfx(g, str, x, y - 1); drawBitmapTextToGfx(g, str, x, y + 1);
+  g.tint(fillHex); drawBitmapTextToGfx(g, str, x, y); g.noTint();
+}
 
-  // title
-  fill(200, 180, 140);
-  textAlign(CENTER, CENTER);
-  textSize(32);
-  textStyle(BOLD);
-  text("BORDER CHECK", VIEWW / 2, VIEWH / 3 - 20);
+function redrawHUD() {
+  hudGfx.clear(); hudGfx.drawingContext.imageSmoothingEnabled = false; hudGfx.imageMode(CORNER);
+  drawOutlinedTextToGfx(hudGfx, `RESCUED ${score}/15`, 6, 6, "#ffdc00");
+  for (let i = 0; i < maxHealth; i++) {
+    drawOutlinedTextToGfx(hudGfx, "~", 200 + i * (GLYPH_W + 2), 6, i < health ? "#ff5050" : "#783030");
+  }
+  // SQ6: mute indicator
+  if (musicMuted) drawOutlinedTextToGfx(hudGfx, "MUTED", 6, VIEWH - 14, "#aaaaaa");
+}
 
-  // subtitle
-  textSize(14);
-  textStyle(NORMAL);
-  fill(160, 150, 130);
-  text("Inspired by Papers, Please", VIEWW / 2, VIEWH / 3 + 20);
+function isPlayerGrounded() {
+  return sensor.overlapping(ground) || sensor.overlapping(groundDeep) || sensor.overlapping(platformsL) || sensor.overlapping(platformsR);
+}
 
-  // rule
-  textSize(16);
-  fill(220, 200, 160);
-  text("RULE: Only citizens of ARSTOTZKA may enter.", VIEWW / 2, VIEWH / 2 + 10);
+// ─── EVENTS WITH SOUND ───────────────────────────────────────────────────────
+function rescueLeaf(player, leaf) {
+  if (!leaf.active) return;
+  leaf.active = false; leaf.visible = false; leaf.removeColliders(); score++;
+  playSfx(sfxLeaf); // SQ6
+  if (score >= WIN_SCORE) { won = true; player.vel.x = 0; player.vel.y = 0; }
+}
 
-  // controls
-  textSize(14);
-  fill(140, 200, 140);
-  text("Press A to APPROVE  |  Press D to DENY", VIEWW / 2, VIEWH / 2 + 50);
+function takeDamageFromFire(player, fire) {
+  if (invulnTimer > 0 || dead) return;
+  health = max(0, health - 1); if (health <= 0) pendingDeath = true;
+  invulnTimer = INVULN_FRAMES; knockTimer = KNOCK_FRAMES;
+  const dir = player.x < fire.x ? -1 : 1;
+  player.vel.x = dir * PLAYER_KNOCKBACK_X; player.vel.y = -PLAYER_KNOCKBACK_Y;
+  attacking = false; attackFrameCounter = 0;
+  playSfx(sfxDamage);            // SQ6
+  damageFlashTimer = DAMAGE_FLASH_FRAMES; // SQ6 bonus flash
+}
 
-  // start prompt
-  if (frameCount % 60 < 40) {
-    fill(255);
-    textSize(18);
-    text("Click anywhere to begin", VIEWW / 2, VIEWH * 0.75);
+function playerHitByBoar(player, e) {
+  if (e.dying || e.dead || invulnTimer > 0 || dead) return;
+  health = max(0, health - 1); if (health <= 0) pendingDeath = true;
+  invulnTimer = INVULN_FRAMES; knockTimer = KNOCK_FRAMES;
+  const dir = player.x < e.x ? -1 : 1;
+  player.vel.x = dir * PLAYER_KNOCKBACK_X; player.vel.y = -PLAYER_KNOCKBACK_Y;
+  attacking = false; attackFrameCounter = 0;
+  playSfx(sfxDamage);            // SQ6
+  damageFlashTimer = DAMAGE_FLASH_FRAMES; // SQ6 bonus flash
+}
+
+function tryHitBoar() {
+  if (!sensor.overlapping(ground) && !sensor.overlapping(platformsL) && !sensor.overlapping(platformsR)) return;
+  const facingDir = player.mirror.x ? -1 : 1;
+  const playerFeetY = player.y + player.h / 2;
+  for (const e of boar) {
+    if (e.dead || e.dying) continue;
+    const dx = e.x - player.x;
+    if (Math.sign(dx) !== facingDir || abs(dx) > ATTACK_RANGE_X + e.w / 2) continue;
+    if (abs((e.y + e.h / 2) - playerFeetY) > ATTACK_RANGE_Y + 10) continue;
+    damageBoar(e, facingDir);
+    playSfx(sfxHit); // SQ6
+    attackHitThisSwing = true; return;
   }
 }
 
-// ============================================================
-// MAIN GAME DRAWING
-// ============================================================
-function drawGame() {
-  // desk background
-  drawDesk();
+// ─── BOAR HELPERS ────────────────────────────────────────────────────────────
+function turnBoar(e, newDir) {
+  if (e.turnTimer > 0) return;
+  e.dir = newDir; e.turnTimer = BOAR_TURN_COOLDOWN; e.x += e.dir * 6; e.vel.x = 0;
+}
 
-  // slide document in
-  if (docSliding) {
-    docX = lerp(docX, docTargetX, 0.08);
-    if (abs(docX - docTargetX) < 1) {
-      docX = docTargetX;
-      docSliding = false;
-      waitingForInput = true;
+function groundAheadForDir(e, dir) {
+  const old = e.dir; e.dir = dir; updateBoarProbes(e);
+  const ok = e.frontProbe.overlapping(ground) || e.frontProbe.overlapping(groundDeep) || e.frontProbe.overlapping(platformsL) || e.frontProbe.overlapping(platformsR);
+  e.dir = old; return ok;
+}
+
+function fixSpawnEdgeCase(e) {
+  const leftOk = groundAheadForDir(e, -1), rightOk = groundAheadForDir(e, 1);
+  if (leftOk && !rightOk) e.dir = -1; else if (rightOk && !leftOk) e.dir = 1;
+  updateBoarProbes(e); e.vel.x = 0; e.turnTimer = 0; e.wasDanger = false;
+}
+
+function hookBoarSolids() {
+  boar.collides(ground); boar.collides(groundDeep); boar.collides(platformsL);
+  boar.collides(platformsR); boar.collides(wallsL); boar.collides(wallsR);
+}
+
+function damageBoar(e, facingDir) {
+  if (e.dead || e.dying) return;
+  e.hp = max(0, e.hp - 1); e.flashTimer = BOAR_FLASH_FRAMES;
+  if (e.hp <= 0) { e.dying = true; e.vel.x = 0; e.collider = "none"; e.removeColliders(); e.ani = "throwPose"; e.ani.frame = 0; return; }
+  e.knockTimer = BOAR_KNOCK_FRAMES; e.vel.x = facingDir * BOAR_KNOCK_X; e.vel.y = -BOAR_KNOCK_Y;
+  e.ani = "throwPose"; e.ani.frame = 0;
+}
+
+function boarDiesInFire(e, f) { if (e.dead || e.dying) return; e.hp = 0; e.dying = true; e.knockTimer = 0; e.vel.x = 0; }
+
+// ─── OVERLAYS ────────────────────────────────────────────────────────────────
+function drawWinOverlay() {
+  camera.off(); drawingContext.imageSmoothingEnabled = false;
+  push(); noStroke(); fill(0, 120); rect(0, 0, VIEWW, VIEWH); pop();
+  const msg1 = "YOU WIN!", msg2 = "Press R to restart";
+  drawOutlinedTextToGfx(window, msg1, Math.round((VIEWW - msg1.length * GLYPH_W) / 2), Math.round(VIEWH / 2 - 18), "#00e5ff");
+  drawOutlinedTextToGfx(window, msg2, Math.round((VIEWW - msg2.length * GLYPH_W) / 2), Math.round(VIEWH / 2 + 2), "#ffffff");
+  camera.on();
+}
+
+function drawDeathOverlay() {
+  camera.off(); drawingContext.imageSmoothingEnabled = false;
+  push(); noStroke(); fill(0, 160); rect(0, 0, VIEWW, VIEWH); pop();
+  const msg1 = "YOU DIED", msg2 = "Press R to restart";
+  drawOutlinedTextToGfx(window, msg1, Math.round((VIEWW - msg1.length * GLYPH_W) / 2), Math.round(VIEWH / 2 - 18), "#ffffff");
+  drawOutlinedTextToGfx(window, msg2, Math.round((VIEWW - msg2.length * GLYPH_W) / 2), Math.round(VIEWH / 2 + 2), "#ffffff");
+  camera.on();
+}
+
+// ─── BOAR PROBES ─────────────────────────────────────────────────────────────
+function placeProbe(probe, x, y) { probe.x = x; probe.y = y; }
+
+function attachBoarProbes(e) {
+  const mk = (color) => { const p = new Sprite(-9999, -9999, PROBE_SIZE, PROBE_SIZE); p.color = color; p.stroke = "black"; p.collider = "none"; p.sensor = true; p.visible = false; p.layer = 999; return p; };
+  e.footProbe = mk("magenta"); e.frontProbe = mk("cyan"); e.groundProbe = mk("yellow");
+}
+
+function updateBoarProbes(e) {
+  const fx = e.x + e.dir * PROBE_FORWARD;
+  placeProbe(e.frontProbe, fx, e.y + PROBE_FRONT_Y);
+  placeProbe(e.footProbe,  fx, e.y - PROBE_HEAD_Y);
+}
+
+function updateGroundProbe(e) { if (!e.groundProbe) return; placeProbe(e.groundProbe, e.x, e.y + e.h / 2 + 4); }
+function frontProbeHasGroundAhead(e) { const p = e.frontProbe; return p.overlapping(ground) || p.overlapping(groundDeep) || p.overlapping(platformsL) || p.overlapping(platformsR); }
+function frontProbeHitsWall(e)       { const p = e.frontProbe; return p.overlapping(wallsL) || p.overlapping(wallsR); }
+function shouldTurnNow(e, danger)    { const r = danger && !e.wasDanger; e.wasDanger = danger; return r; }
+function boarGrounded(e)             { const p = e.groundProbe; return p.overlapping(ground) || p.overlapping(groundDeep) || p.overlapping(platformsL) || p.overlapping(platformsR); }
+
+// ─── BOAR AI ─────────────────────────────────────────────────────────────────
+function updateBoars() {
+  if (won) { for (const e of boar) e.vel.x = 0; return; }
+  for (const e of boar) {
+    updateBoarProbes(e); updateGroundProbe(e);
+    if (e.spawnFreeze > 0) { e.spawnFreeze--; e.vel.x = 0; e.ani = "run"; continue; }
+    if (e.flashTimer > 0) e.flashTimer--; if (e.knockTimer > 0) e.knockTimer--; if (e.turnTimer > 0) e.turnTimer--;
+    e.tint = e.flashTimer > 0 ? "#ff5050" : "#ffffff";
+    const grounded = boarGrounded(e);
+    if (!e.dead && e.dying && grounded) { e.dead = true; e.deathStarted = false; }
+    if (e.dying && !e.dead) { e.vel.x = 0; e.ani = "throwPose"; e.ani.frame = 0; continue; }
+    if (e.dead && !e.deathStarted) {
+      e.deathStarted = true; e.holdX = e.x; e.holdY = e.y; e.vel.x = 0; e.vel.y = 0;
+      e.collider = "none"; e.removeColliders(); e.x = e.holdX; e.y = e.holdY;
+      e.ani = "death"; e.ani.frame = 0; e.deathFrameTimer = 0; e.vanishTimer = 24; e.visible = true;
     }
-  }
-
-  // draw document if we have a traveller
-  if (currentTraveller) {
-    drawDocument(docX, 80);
-  }
-
-  // draw HUD
-  drawHUD();
-
-  // draw feedback text
-  if (feedbackTimer > 0) {
-    feedbackTimer--;
-    let alpha = map(feedbackTimer, 0, 60, 0, 255);
-    fill(red(feedbackColor), green(feedbackColor), blue(feedbackColor), alpha);
-    textAlign(CENTER, CENTER);
-    textSize(24);
-    textStyle(BOLD);
-    text(feedbackText, VIEWW / 2, VIEWH / 2 + 40);
-    textStyle(NORMAL);
-  }
-
-  // draw controls hint at bottom
-  fill(180, 180, 180, 150);
-  textAlign(CENTER, BOTTOM);
-  textSize(12);
-  text("[A] Approve    [D] Deny", VIEWW / 2, VIEWH - 45);
-
-  // check if game is over
-  if (travellersProcessed >= maxTravellers || lives <= 0) {
-    gameState = "gameover";
-  }
-
-  // if no current traveller and game still going, spawn next
-  if (!currentTraveller && gameState === "playing") {
-    spawnNextTraveller();
-  }
-}
-
-// ============================================================
-// DESK DRAWING
-// ============================================================
-function drawDesk() {
-  // wall
-  fill(50, 45, 65);
-  noStroke();
-  rect(0, 0, VIEWW, VIEWH - 80);
-
-  // desk surface
-  fill(90, 65, 45);
-  rect(0, VIEWH - 80, VIEWW, 80);
-
-  // desk edge highlight
-  fill(110, 80, 55);
-  rect(0, VIEWH - 80, VIEWW, 4);
-
-  // window on wall
-  fill(70, 80, 110);
-  stroke(80, 70, 60);
-  strokeWeight(3);
-  rect(VIEWW - 120, 30, 80, 60, 3);
-  noStroke();
-
-  // window bars
-  stroke(80, 70, 60);
-  strokeWeight(2);
-  line(VIEWW - 80, 30, VIEWW - 80, 90);
-  line(VIEWW - 120, 60, VIEWW - 40, 60);
-  noStroke();
-}
-
-// ============================================================
-// DOCUMENT DRAWING — represents traveller's papers
-// ============================================================
-function drawDocument(x, y) {
-  // paper shadow
-  fill(20, 20, 30, 100);
-  noStroke();
-  rect(x + 4, y + 4, 280, 200, 3);
-
-  // paper
-  fill(235, 225, 200);
-  stroke(180, 170, 150);
-  strokeWeight(1);
-  rect(x, y, 280, 200, 3);
-  noStroke();
-
-  // header
-  fill(80, 60, 50);
-  textAlign(LEFT, TOP);
-  textSize(16);
-  textStyle(BOLD);
-  text("TRAVEL DOCUMENT", x + 20, y + 15);
-
-  // divider line
-  stroke(180, 170, 150);
-  strokeWeight(1);
-  line(x + 20, y + 38, x + 260, y + 38);
-  noStroke();
-
-  // document details
-  textStyle(NORMAL);
-  textSize(13);
-
-  fill(120, 100, 80);
-  text("NAME:", x + 20, y + 50);
-  text("NATION:", x + 20, y + 80);
-  text("PURPOSE:", x + 20, y + 110);
-
-  fill(50, 40, 30);
-  textSize(14);
-  text(currentTraveller.name, x + 90, y + 50);
-  
-  // highlight country name — red if not Arstotzka, green if valid
-  if (currentTraveller.isValid) {
-    fill(40, 100, 40);
-  } else {
-    fill(50, 40, 30);
-  }
-  text(currentTraveller.country, x + 100, y + 80);
-
-  fill(50, 40, 30);
-  text("Entry", x + 110, y + 110);
-
-  // small stamp area indicator
-  fill(200, 190, 170);
-  stroke(180, 170, 150);
-  rect(x + 160, y + 140, 100, 45, 2);
-  noStroke();
-  fill(170, 160, 140);
-  textSize(9);
-  textAlign(CENTER, CENTER);
-  text("STAMP AREA", x + 210, y + 162);
-  textAlign(LEFT, TOP);
-}
-
-// ============================================================
-// HUD — score, lives, progress
-// ============================================================
-function drawHUD() {
-  // top bar
-  fill(20, 20, 35, 200);
-  noStroke();
-  rect(0, 0, VIEWW, 30);
-
-  fill(220, 200, 160);
-  textAlign(LEFT, CENTER);
-  textSize(13);
-  text("Score: " + score, 10, 15);
-
-  // lives as hearts
-  textAlign(CENTER, CENTER);
-  for (let i = 0; i < 3; i++) {
-    if (i < lives) {
-      fill(220, 60, 60);
-    } else {
-      fill(80, 40, 40);
+    if (e.dead) {
+      e.x = e.holdX; e.y = e.holdY;
+      const msPerFrame = (boarAnis.death.frameDelay * 1000) / 60;
+      e.deathFrameTimer += deltaTime;
+      const f = Math.floor(e.deathFrameTimer / msPerFrame);
+      e.ani.frame = Math.min(boarAnis.death.frames - 1, f);
+      if (f >= boarAnis.death.frames - 1) {
+        if (e.vanishTimer > 0) { e.visible = Math.floor(e.vanishTimer / 3) % 2 === 0; e.vanishTimer--; }
+        else { e.footProbe?.remove(); e.frontProbe?.remove(); e.groundProbe?.remove(); e.remove(); }
+      }
+      continue;
     }
-    textSize(16);
-    text("♥", VIEWW / 2 - 20 + i * 20, 15);
-  }
-
-  // progress
-  fill(220, 200, 160);
-  textAlign(RIGHT, CENTER);
-  textSize(13);
-  text(travellersProcessed + "/" + maxTravellers, VIEWW - 10, 15);
-}
-
-// ============================================================
-// GAME OVER SCREEN
-// ============================================================
-function drawGameOver() {
-  fill(20, 20, 35);
-  noStroke();
-  rect(0, 0, VIEWW, VIEWH);
-
-  textAlign(CENTER, CENTER);
-
-  if (lives <= 0) {
-    fill(200, 60, 60);
-    textSize(28);
-    textStyle(BOLD);
-    text("TERMINATED", VIEWW / 2, VIEWH / 3);
-    textStyle(NORMAL);
-    fill(180, 160, 140);
-    textSize(14);
-    text("Too many mistakes. You have been relieved.", VIEWW / 2, VIEWH / 3 + 35);
-  } else {
-    fill(140, 200, 140);
-    textSize(28);
-    textStyle(BOLD);
-    text("SHIFT COMPLETE", VIEWW / 2, VIEWH / 3);
-    textStyle(NORMAL);
-    fill(180, 160, 140);
-    textSize(14);
-    text("Glory to Arstotzka.", VIEWW / 2, VIEWH / 3 + 35);
-  }
-
-  fill(220, 200, 160);
-  textSize(20);
-  text("Final Score: " + score + " / " + maxTravellers, VIEWW / 2, VIEWH / 2 + 20);
-
-  if (frameCount % 60 < 40) {
-    fill(255);
-    textSize(16);
-    text("Click to play again", VIEWW / 2, VIEWH * 0.72);
+    if (e.knockTimer > 0) { e.ani = "throwPose"; e.ani.frame = 0; continue; }
+    if (!grounded)         { e.ani = "throwPose"; e.ani.frame = 0; continue; }
+    if (e.dir !== 1 && e.dir !== -1) e.dir = random([-1, 1]);
+    if (e.x < e.w / 2)          turnBoar(e,  1);
+    if (e.x > LEVELW - e.w / 2) turnBoar(e, -1);
+    const danger = !frontProbeHasGroundAhead(e) || e.frontProbe.overlapping(leaf) || e.frontProbe.overlapping(fire) || frontProbeHitsWall(e) || e.footProbe.overlapping(fire);
+    if (e.turnTimer === 0 && shouldTurnNow(e, danger)) { turnBoar(e, -e.dir); updateBoarProbes(e); continue; }
+    e.vel.x = e.dir * BOAR_SPEED; e.mirror.x = e.dir === -1; e.ani = "run";
   }
 }
 
-// ============================================================
-// SPAWN NEXT TRAVELLER — slide document in with sound
-// ============================================================
-function spawnNextTraveller() {
-  currentTraveller = generateTraveller();
-  docX = -300;
-  docSliding = true;
-  waitingForInput = false;
-  playSlideSound(); // SOUND: paper sliding in [3]
+// ─── RESTART ─────────────────────────────────────────────────────────────────
+function restartGame() {
+  won = false; score = 0; health = maxHealth; invulnTimer = 0; knockTimer = 0;
+  dead = false; pendingDeath = false; deathStarted = false; deathFrameTimer = 0;
+  attacking = false; attackFrameCounter = 0; damageFlashTimer = 0;
+  player.x = FRAME_W; player.y = PLAYER_START_Y; player.vel.x = 0; player.vel.y = 0;
+  sensor.x = player.x; sensor.y = player.y + player.h / 2; sensor.vel.x = 0; sensor.vel.y = 0;
+  player.ani = "idle"; player.tint = "#ffffff"; camera.x = undefined; camera.y = undefined;
+  for (const item of leafSpawns) { item.s.x = item.x; item.s.y = item.y; item.s.active = true; item.s.visible = true; item.s.removeColliders(); }
+  for (const e of boar) { e.footProbe?.remove(); e.frontProbe?.remove(); e.groundProbe?.remove(); e.remove(); }
+  boar = new Group(); boar.spriteSheet = boarImg; boar.anis.w = FRAME_W; boar.anis.h = FRAME_H; boar.anis.offset.y = -8; boar.addAnis(boarAnis); boar.overlaps(fire, boarDiesInFire);
+  for (const s of boarSpawns) {
+    const e = new Sprite(s.x, s.y, BOAR_W, BOAR_H);
+    e.spriteSheet = boarImg; e.rotationLock = true; e.anis.w = FRAME_W; e.anis.h = FRAME_H; e.anis.offset.y = -8; e.addAnis(boarAnis);
+    e.physics = "dynamic"; e.w = BOAR_W; e.h = BOAR_H; e.friction = 0; e.bounciness = 0; e.hp = BOAR_HP;
+    attachBoarProbes(e); e.dir = random([-1, 1]); boar.add(e); fixSpawnEdgeCase(e);
+    e.spawnFreeze = 1; updateBoarProbes(e); updateGroundProbe(e); e.vel.x = 0;
+    e.wasDanger = false; e.flashTimer = 0; e.knockTimer = 0; e.turnTimer = 0;
+    e.dead = false; e.dying = false; e.deathStarted = false; e.deathFrameTimer = 0; e.vanishTimer = 0; e.holdX = e.x; e.holdY = e.y; e.mirror.x = e.dir === -1; e.ani = "run";
+  }
+  hookBoarSolids(); player.overlaps(boar, playerHitByBoar); lastScore = lastHealth = lastMaxHealth = null;
+  if (!musicMuted) startMusic();
 }
 
-// ============================================================
-// PROCESS DECISION — physics stamp drops + sound feedback [2][3][4]
-// ============================================================
-function processDecision(approved) {
-  if (!waitingForInput || !currentTraveller) return;
-  waitingForInput = false;
-
-  let correct = false;
-
-  if (approved && currentTraveller.isValid) {
-    correct = true; // correctly approved a valid traveller
-  } else if (!approved && !currentTraveller.isValid) {
-    correct = true; // correctly denied an invalid traveller
+// ─── MAKE WORLD ──────────────────────────────────────────────────────────────
+function makeWorld() {
+  world.gravity.y = GRAVITY;
+  boar = new Group(); boar.spriteSheet = boarImg; boar.anis.w = FRAME_W; boar.anis.h = FRAME_H; boar.anis.offset.y = -8; boar.addAnis(boarAnis); boar.physics = "dynamic"; boar.tile = "b";
+  leaf = new Group(); leaf.physics = "static"; leaf.spriteSheet = leafImg; leaf.addAnis({ idle: { w: 32, h: 32, row: 0, frames: 5 } }); leaf.w = 10; leaf.h = 6; leaf.anis.offset.x = 2; leaf.anis.offset.y = -4; leaf.tile = "x";
+  fire = new Group(); fire.physics = "static"; fire.spriteSheet = fireImg; fire.addAnis({ burn: { w: 32, h: 32, row: 0, frames: 16 } }); fire.w = 18; fire.h = 16; fire.tile = "f";
+  boar.overlaps(fire, boarDiesInFire);
+  ground = new Group(); ground.physics = "static"; ground.img = groundTileImg; ground.tile = "g";
+  groundDeep = new Group(); groundDeep.physics = "static"; groundDeep.img = groundTileDeepImg; groundDeep.tile = "d";
+  platformsL = new Group(); platformsL.physics = "static"; platformsL.img = platformLCImg; platformsL.tile = "L";
+  platformsR = new Group(); platformsR.physics = "static"; platformsR.img = platformRCImg; platformsR.tile = "R";
+  wallsL = new Group(); wallsL.physics = "static"; wallsL.img = wallLImg; wallsL.tile = "[";
+  wallsR = new Group(); wallsR.physics = "static"; wallsR.img = wallRImg; wallsR.tile = "]";
+  new Tiles(level, 0, 0, TILE_W, TILE_H);
+  player = new Sprite(FRAME_W, PLAYER_START_Y, FRAME_W, FRAME_H);
+  player.spriteSheet = playerImg; player.rotationLock = true;
+  player.anis.w = FRAME_W; player.anis.h = FRAME_H; player.anis.offset.y = -8; player.addAnis(playerAnis);
+  player.ani = "idle"; player.w = 18; player.h = 12; player.friction = 0; player.bounciness = 0;
+  player.overlaps(fire, takeDamageFromFire); player.overlaps(leaf, rescueLeaf); player.collides(boar, playerHitByBoar);
+  sensor = new Sprite(); sensor.x = player.x; sensor.y = player.y + player.h / 2; sensor.w = player.w; sensor.h = 2; sensor.mass = 0.01; sensor.removeColliders(); sensor.visible = false;
+  const sensorJoint = new GlueJoint(player, sensor); sensorJoint.visible = false;
+  for (const s of fire) { s.collider = "static"; s.sensor = true; }
+  for (const e of boar) {
+    e.physics = "dynamic"; e.rotationLock = true; e.w = BOAR_W; e.h = BOAR_H; e.anis.offset.y = -8; e.friction = 0; e.bounciness = 0; e.hp = BOAR_HP;
+    attachBoarProbes(e); e.dir = random([-1, 1]); fixSpawnEdgeCase(e);
+    e.wasDanger = false; e.flashTimer = 0; e.knockTimer = 0; e.turnTimer = 0;
+    e.dead = false; e.dying = false; e.deathStarted = false; e.deathFrameTimer = 0; e.vanishTimer = 0; e.holdX = e.x; e.holdY = e.y; e.mirror.x = e.dir === -1; e.ani = "run";
   }
-
-  if (correct) {
-    score++;
-    feedbackText = approved ? "✓ APPROVED — Correct!" : "✗ DENIED — Correct!";
-    feedbackColor = color(100, 220, 100);
-  } else {
-    lives--;
-    feedbackText = approved ? "✓ APPROVED — Wrong!" : "✗ DENIED — Wrong!";
-    feedbackColor = color(220, 80, 80);
-  }
-  feedbackTimer = 70;
-
-  // PHYSICS + SOUND (BONUS): Drop a stamp sprite with gravity [2][4]
-  // The stamp falls, bounces on the desk, and makes a thud sound on collision
-  let stampX = random(docX + 170, docX + 250);
-  let stampY = 40; // drops from top
-
-  let s = new Sprite(stampX, stampY, 50, 25);
-  s.physics = "dynamic";
-  s.color = approved ? color(60, 160, 60, 200) : color(200, 50, 50, 200);
-  s.stroke = approved ? color(40, 120, 40) : color(160, 30, 30);
-  s.strokeWeight = 2;
-  s.text = approved ? "APPROVED" : "DENIED";
-  s.textColor = color(255);
-  s.textSize = 9;
-  s.bounciness = 0.3;
-  s.friction = 0.8;
-  s.rotationDrag = 5;
-  s.vel.y = 2;
-  s.vel.x = random(-1, 1);
-  s.rotation = random(-15, 15);
-  s.life = 90; // auto-remove after 90 frames
-  stamps.add(s);
-  s.collides(deskGroup, onStampHitDesk); // PHYSICS collision callback [2][4]
-
-  // SOUND: play approve or deny tone [3]
-  if (approved) {
-    playApproveSound();
-  } else {
-    playDenySound();
-  }
-
-  travellersProcessed++;
-
-  // clear traveller after short delay
-  setTimeout(() => {
-    currentTraveller = null;
-  }, 800);
-}
-
-// PHYSICS + SOUND combined (BONUS): stamp hits desk → thud sound [2][3][4]
-function onStampHitDesk(stamp, desk) {
-  playStampSound();
-}
-
-// ============================================================
-// INPUT HANDLING
-// ============================================================
-function keyPressed() {
-  // unlock audio on first interaction [3]
-  userStartAudio();
-
-  if (gameState === "playing") {
-    if (key === "a" || key === "A") {
-      processDecision(true);  // approve
-    } else if (key === "d" || key === "D") {
-      processDecision(false); // deny
-    }
-  }
-}
-
-function mousePressed() {
-  // unlock audio on first interaction [3]
-  userStartAudio();
-
-  if (gameState === "title") {
-    gameState = "playing";
-    score = 0;
-    lives = 3;
-    travellersProcessed = 0;
-    currentTraveller = null;
-  } else if (gameState === "gameover") {
-    // reset
-    gameState = "playing";
-    score = 0;
-    lives = 3;
-    travellersProcessed = 0;
-    currentTraveller = null;
-    // remove old stamps
-    for (let s of stamps) {
-      s.remove();
-    }
-  }
+  hookBoarSolids();
+  bgLayers = [{ img: bgFarImg, speed: 0.2 }, { img: bgMidImg, speed: 0.4 }, { img: bgForeImg, speed: 0.6 }];
 }
